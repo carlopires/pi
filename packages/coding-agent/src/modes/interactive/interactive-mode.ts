@@ -12,6 +12,7 @@ import type { AuthEvent, AuthPrompt } from "@earendil-works/pi-ai";
 import {
 	type AssistantMessage,
 	type ImageContent,
+	isRateLimitError,
 	isRetryableAssistantError,
 	type Message,
 	type Model,
@@ -3614,7 +3615,13 @@ export class InteractiveMode {
 					this.session.abortRetry();
 				};
 				this.showStatusIndicator(
-					new RetryStatusIndicator(this.ui, event.attempt, event.maxAttempts, event.delayMs),
+					new RetryStatusIndicator(
+						this.ui,
+						event.attempt,
+						event.maxAttempts,
+						event.delayMs,
+						isRateLimitError(event.errorMessage),
+					),
 				);
 				this.ui.requestRender();
 				break;
@@ -3638,7 +3645,13 @@ export class InteractiveMode {
 			case "summarization_retry_scheduled": {
 				this.showError(event.errorMessage);
 				this.showStatusIndicator(
-					new RetryStatusIndicator(this.ui, event.attempt, event.maxAttempts, event.delayMs),
+					new RetryStatusIndicator(
+						this.ui,
+						event.attempt,
+						event.maxAttempts,
+						event.delayMs,
+						isRateLimitError(event.errorMessage),
+					),
 				);
 				this.ui.requestRender();
 				break;

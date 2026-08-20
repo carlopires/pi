@@ -40,6 +40,7 @@ import type {
 import {
 	clampThinkingLevel,
 	cleanupSessionResources,
+	getServerRetryDelayMs,
 	getSupportedThinkingLevels,
 	isContextOverflow,
 	isRecoverableLength,
@@ -3390,7 +3391,12 @@ export class AgentSession {
 			return false;
 		}
 
-		const delayMs = retryDelayMs(settings, this._retryAttempt);
+		// Prefer the server-requested retry delay (e.g. Google's RetryInfo.retryDelay /
+		// "Please retry in Xs") over the local exponential backoff so pi actually waits out a
+		// provider-imposed throttle window instead of retrying straight back into it.
+		const serverDelayMs =
+			message.errorMessage !== undefined ? getServerRetryDelayMs(message.errorMessage) : undefined;
+		const delayMs = serverDelayMs ?? retryDelayMs(settings, this._retryAttempt);
 
 		this._emit({
 			type: "auto_retry_start",

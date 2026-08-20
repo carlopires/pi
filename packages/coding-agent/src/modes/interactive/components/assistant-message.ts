@@ -1,4 +1,4 @@
-import type { AssistantMessage } from "@earendil-works/pi-ai";
+import { type AssistantMessage, isRateLimitError } from "@earendil-works/pi-ai";
 import { Container, Markdown, type MarkdownTheme, MouseRegion, Spacer, Text } from "@earendil-works/pi-tui";
 import type { MarkdownTransformer } from "../../../core/extensions/types.ts";
 import { getMarkdownTheme, theme } from "../theme/theme.ts";
@@ -195,7 +195,16 @@ export class AssistantMessageComponent extends Container {
 			} else if (message.stopReason === "error") {
 				const errorMsg = message.errorMessage || "Unknown error";
 				this.contentContainer.addChild(new Spacer(1));
-				this.contentContainer.addChild(new Text(theme.fg("error", `Error: ${errorMsg}`), this.outputPad, 0));
+				// A provider-solicited rate limit is going to be retried automatically; showing the
+				// full escaped JSON body (which can be hundreds of characters long) is noise. Surface
+				// a short line instead — the animated countdown runs in the status bar.
+				if (isRateLimitError(errorMsg)) {
+					this.contentContainer.addChild(
+						new Text(theme.fg("warning", "⚠ Too many requests. Will retry automatically."), this.outputPad, 0),
+					);
+				} else {
+					this.contentContainer.addChild(new Text(theme.fg("error", `Error: ${errorMsg}`), this.outputPad, 0));
+				}
 			}
 		}
 	}
