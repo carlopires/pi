@@ -9,18 +9,22 @@ function buildProviderErrorPattern(patterns: readonly string[]): RegExp {
  * quota/budget exhaustion.
  *
  * Google Gemini AI / Vertex throttle their per-minute input-token metrics with an
- * HTTP 429 whose body carries `RESOURCE_EXHAUSTED`, a `RetryInfo` detail with a
- * `retryDelay`, and the text "Please retry in Xs". Those quota windows reset in
- * seconds. The same body also mentions "quota exceeded" and "billing", so the
- * permanent-limit branch below would otherwise misclassify it as non-retryable and
- * fail the turn immediately. Any of these markers means the caller should back off
- * and retry instead.
+ * HTTP 429 whose body carries a `RetryInfo` detail with a `retryDelay` and the
+ * text "Please retry in Xs". Those quota windows reset in seconds. The same body
+ * also mentions "quota exceeded" and "billing", so the permanent-limit branch below
+ * would otherwise misclassify it as non-retryable and fail the turn immediately.
+ *
+ * These are strictly the *retry-guidance* signals. Google also reports permanent
+ * prepayment/billing exhaustion with the same HTTP 429 + `RESOURCE_EXHAUSTED`, so
+ * `RESOURCE_EXHAUSTED` alone is ambiguous and must not be treated as transient.
+ * Only the presence of retry guidance ("retry in Xs" / RetryInfo) proves the quota
+ * is self-resetting.
  */
 const TRANSIENT_QUOTA_PATTERN = buildProviderErrorPattern([
-	"resource_exhausted",
 	"please retry in",
 	"retryinfo",
 	"retrydelay",
+	"rate.?limit",
 ]);
 
 const NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN = buildProviderErrorPattern([
@@ -40,6 +44,11 @@ const NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN = buildProviderErrorPattern([
 	"out of budget",
 	"quota exceeded",
 	"billing",
+
+	// Google prepaid-credits depletion: a permanent 429 RESOURCE_EXHAUSTED that does NOT
+	// carry retry guidance (only recharge/resubscribe and retry once credits are added).
+	"prepayment",
+	"credits are depleted",
 ]);
 
 const RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([
@@ -314,11 +323,15 @@ export function getServerRetryDelayMs(errorMessage: string): number | undefined 
 }
 
 /**
- * Whether an error message looks like a provider-solicited rate limit / throttle
- * (as opposed to a generic server failure). Used to render a friendly retry message
- * instead of dumping the raw error body. The `getServerRetryDelayMs` result is the
- * strongest signal, so it doubles as the check here.
+ * Whether an error message looks like a transient provider-solicited rate limit /
+ * throttle (as opposed to a permanent quota/billing exhaustion or a generic server
+ * failure). Used to render a friendly "will retry" message instead of dumping the
+ * raw error body. Permanent exhaustion (which is also HTTP 429 RESOURCE_EXHAUSTED,
+ * e.g. Google "prepayment credits are depleted") must NOT match.
  */
 export function isRateLimitError(errorMessage: string): boolean {
+	if (NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN.test(errorMessage) && !TRANSIENT_QUOTA_PATTERN.test(errorMessage)) {
+		return false;
+	}
 	return getServerRetryDelayMs(errorMessage) !== undefined || RATE_LIMIT_ERROR_PATTERN.test(errorMessage);
 }

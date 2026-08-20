@@ -126,6 +126,19 @@ describe("provider retry classification", () => {
 		).toBe(true);
 	});
 
+	it("classifies Google permanent prepayment depletion as non-retryable", () => {
+		// Same HTTP 429 + RESOURCE_EXHAUSTED as a transient throttle, but "prepayment credits
+		// are depleted" is billing exhaustion with NO retry guidance: it must fail immediately
+		// and must not be surfaced as a "will retry" throttle.
+		const msg = fauxAssistantMessage("", {
+			stopReason: "error",
+			errorMessage:
+				'{"error":{"code":429,"status":"Too Many Requests","message":"{"error":{"code":429,"message":"Your prepayment credits are depleted. Please go to AI Studio to manage your project and billing. Learn more at https://ai.google.dev/gemini-api/docs/billing#prepay. \\","status":"RESOURCE_EXHAUSTED"}}"}}',
+		});
+		expect(isRetryableAssistantError(msg)).toBe(false);
+		expect(isRateLimitError(msg.errorMessage ?? "")).toBe(false);
+	});
+
 	it.each([
 		['{"retryDelay":"3s"}', 3000],
 		['{"retryDelay": "0.5s"}', 500],

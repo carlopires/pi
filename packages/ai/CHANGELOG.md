@@ -25,6 +25,7 @@
 - Fixed 1-hour Anthropic cache writes reported by Vercel AI Gateway in streaming deltas being priced at the 5-minute rate ([#9210](https://github.com/earendil-works/pi/issues/9210)).
 - Fixed `isRetryableAssistantError` treating transient per-minute rate-limit throttles (e.g. Google Gemini AI / Vertex 429 `RESOURCE_EXHAUSTED` with `RetryInfo`/`retryDelay` retry guidance) as permanent quota/budget exhaustion because their bodies mention "quota exceeded"/"billing"; they are now retried with backoff instead of failing the turn.
 - Retry backoff now honors the provider-requested delay embedded in the error body (Google `RetryInfo.retryDelay` / "Please retry in Xs") in addition to HTTP `Retry-After` headers; the request-level retry and `retryAssistantCall` both wait out the server-specified window before retrying.
+- Fixed permanent exhaustion (e.g. Google `RESOURCE_EXHAUSTED` "prepayment credits are depleted") being misclassified as a transient throttle and retried: it now fails immediately and is not shown as a "will retry" rate limit.
 
 ## [0.87.1] - 2026-09-22
 
