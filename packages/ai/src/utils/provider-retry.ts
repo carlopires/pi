@@ -1,3 +1,5 @@
+import { getServerRetryDelayMs } from "./retry.ts";
+
 const DEFAULT_MAX_RETRY_DELAY_MS = 60_000;
 
 interface ProviderRetryOptions {
@@ -60,6 +62,13 @@ function getRetryDelayMs(error: ProviderError, retryIndex: number, maxRetryDelay
 		const seconds = Number.parseFloat(retryAfter);
 		const delayMs = Number.isNaN(seconds) ? Date.parse(retryAfter) - Date.now() : seconds * 1000;
 		return validateServerRetryDelayMs(delayMs, maxRetryDelayMs, error.message);
+	}
+
+	// Some providers (e.g. Google) put the delay in the error *body* (RetryInfo.retryDelay /
+	// "Please retry in Xs") instead of an HTTP header; honor it here too.
+	const bodyDelayMs = getServerRetryDelayMs(error.message ?? "");
+	if (bodyDelayMs !== undefined) {
+		return validateServerRetryDelayMs(bodyDelayMs, maxRetryDelayMs, error.message);
 	}
 
 	const exponentialDelay = Math.min(0.5 * 2 ** retryIndex, 8) * 1000;

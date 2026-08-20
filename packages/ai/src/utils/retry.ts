@@ -105,6 +105,9 @@ const RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([
 	"you can retry your request",
 	"try your request again",
 	"please retry your request",
+	"please retry in",
+	// Google gRPC providers signal the exact retry window with a RetryInfo detail.
+	"retrydelay",
 
 	// gRPC based providers (e.g. NVIDIA NIM) and Google's 429 RESOURCE_EXHAUSTED
 	// status. `.?` bridges the one-word Go status (ResourceExhausted) and the
@@ -227,7 +230,12 @@ export async function retryAssistantCall(
 
 		attempt++;
 		lastRetry = { attempt, errorMessage: response.errorMessage || "Unknown error" };
-		const delayMs = retryDelayMs(policy!, attempt);
+		// Prefer the server-requested retry delay (e.g. Google's RetryInfo.retryDelay /
+		// "Please retry in Xs") over the local exponential backoff: Google tells us the exact
+		// per-minute quota window, and retrying any sooner only re-hits the exhausted throttle.
+		const serverDelayMs =
+			response.errorMessage !== undefined ? getServerRetryDelayMs(response.errorMessage) : undefined;
+		const delayMs = serverDelayMs ?? retryDelayMs(policy!, attempt);
 		await callbacks?.onRetryScheduled?.(attempt, maxAttempts, delayMs, lastRetry.errorMessage);
 
 		// Normalize aborts during retry backoff to the same AssistantMessage shape as
@@ -267,4 +275,50 @@ export function isRetryableAssistantError(message: AssistantMessage): boolean {
 	}
 	if (NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN.test(errorMessage)) return false;
 	return RETRYABLE_PROVIDER_ERROR_PATTERN.test(errorMessage);
+}
+
+/** Patterns that indicate a provider-solicited throttled/rate-limited request. */
+const RATE_LIMIT_ERROR_PATTERN = buildProviderErrorPattern([
+	"too many requests",
+	"rate.?limit",
+	"quota",
+	"please retry in",
+	"retrydelay",
+	"resource_exhausted",
+	"429",
+]);
+
+/**
+ * Extract a provider-requested retry delay (in milliseconds) from an error message.
+ *
+ * Some providers (notably Google Gemini AI / Vertex) return the retry guidance in the
+ * error *body* rather than an HTTP `Retry-After` header:
+ * - `RetryInfo.retryDelay`: `{"@type":"...RetryInfo","retryDelay":"3s"}`
+ * - message text: "Please retry in 3.645716424s."
+ *
+ * Returns `undefined` when the provider did not request a specific delay, so callers
+ * can fall back to their own exponential backoff.
+ */
+export function getServerRetryDelayMs(errorMessage: string): number | undefined {
+	const retryDelay = errorMessage.match(/retrydelay[\s"'=:]*?(\d+(?:\.\d+)?)\s*s/i)?.[1];
+	if (retryDelay !== undefined) {
+		const ms = Number.parseFloat(retryDelay) * 1000;
+		if (Number.isFinite(ms) && ms > 0) return ms;
+	}
+	const pleaseRetry = errorMessage.match(/please\s+retry\s+in\s+(\d+(?:\.\d+)?)\s*s/i)?.[1];
+	if (pleaseRetry !== undefined) {
+		const ms = Number.parseFloat(pleaseRetry) * 1000;
+		if (Number.isFinite(ms) && ms > 0) return ms;
+	}
+	return undefined;
+}
+
+/**
+ * Whether an error message looks like a provider-solicited rate limit / throttle
+ * (as opposed to a generic server failure). Used to render a friendly retry message
+ * instead of dumping the raw error body. The `getServerRetryDelayMs` result is the
+ * strongest signal, so it doubles as the check here.
+ */
+export function isRateLimitError(errorMessage: string): boolean {
+	return getServerRetryDelayMs(errorMessage) !== undefined || RATE_LIMIT_ERROR_PATTERN.test(errorMessage);
 }

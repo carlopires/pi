@@ -1,6 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import { fauxAssistantMessage } from "../src/providers/faux.ts";
-import { isRetryableAssistantError, type RetryPolicy, retryAssistantCall, retryDelayMs } from "../src/utils/retry.ts";
+import {
+	getServerRetryDelayMs,
+	isRateLimitError,
+	isRetryableAssistantError,
+	type RetryPolicy,
+	retryAssistantCall,
+	retryDelayMs,
+} from "../src/utils/retry.ts";
 
 const openAIExplicitRetryMessage =
 	"An error occurred while processing your request. You can retry your request, or contact us through our help center at help.openai.com if the error persists. Please include the request ID req_******** in your message.";
@@ -117,6 +124,48 @@ describe("provider retry classification", () => {
 				}),
 			),
 		).toBe(true);
+	});
+
+	it.each([
+		['{"retryDelay":"3s"}', 3000],
+		['{"retryDelay": "0.5s"}', 500],
+		["Please retry in 41.236675877s", 41236.675877],
+	])("extracts server retry delay from %j", (input, expected) => {
+		expect(getServerRetryDelayMs(input)).toBe(expected);
+	});
+
+	it("returns undefined when no server retry delay is requested", () => {
+		expect(getServerRetryDelayMs("overloaded_error")).toBeUndefined();
+		expect(getServerRetryDelayMs("")).toBeUndefined();
+	});
+
+	it("identifies rate-limit/throttle errors", () => {
+		expect(
+			isRateLimitError(
+				'{"error":{"code":429,"status":"RESOURCE_EXHAUSTED","message":"Quota exceeded, please retry in 3.6s"}}',
+			),
+		).toBe(true);
+		expect(isRateLimitError("Too many requests")).toBe(true);
+		expect(isRateLimitError("got status: UNAVAILABLE. overloaded")).toBe(false);
+	});
+
+	it("uses the server-requested delay as the retry backoff", async () => {
+		let n = 0;
+		const onRetryScheduled = vi.fn();
+		const produce = vi.fn(async () => {
+			if (n++ === 0) {
+				return fauxAssistantMessage("", {
+					stopReason: "error",
+					errorMessage: "Quota exhausted, please retry in 1.5s",
+				});
+			}
+			return fauxAssistantMessage("recovered");
+		});
+		const res = await retryAssistantCall(produce, { enabled: true, maxRetries: 3, baseDelayMs: 2000 }, undefined, {
+			onRetryScheduled,
+		});
+		expect(res.content).toEqual([{ type: "text", text: "recovered" }]);
+		expect(onRetryScheduled).toHaveBeenCalledWith(1, 3, 1500, "Quota exhausted, please retry in 1.5s");
 	});
 
 	it("classifies assistant error messages", () => {
