@@ -4,6 +4,25 @@ function buildProviderErrorPattern(patterns: readonly string[]): RegExp {
 	return new RegExp(patterns.join("|"), "i");
 }
 
+/**
+ * Transient quota/rate-limit signals that must not be treated as permanent
+ * quota/budget exhaustion.
+ *
+ * Google Gemini AI / Vertex throttle their per-minute input-token metrics with an
+ * HTTP 429 whose body carries `RESOURCE_EXHAUSTED`, a `RetryInfo` detail with a
+ * `retryDelay`, and the text "Please retry in Xs". Those quota windows reset in
+ * seconds. The same body also mentions "quota exceeded" and "billing", so the
+ * permanent-limit branch below would otherwise misclassify it as non-retryable and
+ * fail the turn immediately. Any of these markers means the caller should back off
+ * and retry instead.
+ */
+const TRANSIENT_QUOTA_PATTERN = buildProviderErrorPattern([
+	"resource_exhausted",
+	"please retry in",
+	"retryinfo",
+	"retrydelay",
+]);
+
 const NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN = buildProviderErrorPattern([
 	// OpenCode Go/free-tier limits returned as 429 JSON error types by OpenCode's
 	// Zen API. These are subscription/account limits, not transient throttles.
@@ -87,8 +106,10 @@ const RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([
 	"try your request again",
 	"please retry your request",
 
-	// gRPC based providers (e.g. NVIDIA NIM)
-	"ResourceExhausted",
+	// gRPC based providers (e.g. NVIDIA NIM) and Google's 429 RESOURCE_EXHAUSTED
+	// status. `.?` bridges the one-word Go status (ResourceExhausted) and the
+	// underscore-separated Google gRPC status (RESOURCE_EXHAUSTED).
+	"resource.?exhausted",
 ]);
 
 /**
@@ -237,6 +258,13 @@ export async function retryAssistantCall(
 export function isRetryableAssistantError(message: AssistantMessage): boolean {
 	if (message.stopReason !== "error" || !message.errorMessage) return false;
 	const errorMessage = message.errorMessage;
+	// A transient quota signal overrides the permanent-limit wording: self-resetting
+	// throttles (e.g. Google's per-minute token quotas at 429 RESOURCE_EXHAUSTED) still
+	// mention "quota exceeded"/"billing" yet carry explicit retry guidance, so they
+	// must be backed off and retried rather than failed as account/budget exhaustion.
+	if (TRANSIENT_QUOTA_PATTERN.test(errorMessage)) {
+		return RETRYABLE_PROVIDER_ERROR_PATTERN.test(errorMessage);
+	}
 	if (NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN.test(errorMessage)) return false;
 	return RETRYABLE_PROVIDER_ERROR_PATTERN.test(errorMessage);
 }

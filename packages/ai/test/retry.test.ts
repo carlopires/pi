@@ -83,6 +83,40 @@ describe("provider retry classification", () => {
 				fauxAssistantMessage("", { stopReason: "error", errorMessage: "429 quota exceeded" }),
 			),
 		).toBe(false);
+		// OpenCode Go subscription/balance exhaustion must remain terminal even though the
+		// message mentions a 429 status (that string alone is not a transient signal).
+		expect(
+			isRetryableAssistantError(
+				fauxAssistantMessage("", { stopReason: "error", errorMessage: "429 GoUsageLimitError out of budget" }),
+			),
+		).toBe(false);
+	});
+
+	it("classifies Google transient per-minute quota throttles as retryable", () => {
+		// 429 RESOURCE_EXHAUSTED on an input-token-per-minute metric with RetryInfo guidance:
+		// self-resetting within ~3s, not permanent quota/budget exhaustion.
+		expect(
+			isRetryableAssistantError(
+				fauxAssistantMessage("", {
+					stopReason: "error",
+					errorMessage:
+						'{"error":{"code":429,"status":"RESOURCE_EXHAUSTED","message":"You exceeded your quota, check billing. Quota exceeded for generate_content_paid_tier_input_token_count, please retry in 3.645716424s","details":[{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"3s"}]}}',
+				}),
+			),
+		).toBe(true);
+	});
+
+	it("classifies anonymized Google transient throttles as retryable", () => {
+		// Even without an explicit HTTP status in the message, the transient retry guidance
+		// alone (RetryInfo/retryDelay) must win over the permanent "quota exceeded" wording.
+		expect(
+			isRetryableAssistantError(
+				fauxAssistantMessage("", {
+					stopReason: "error",
+					errorMessage: 'RESOURCE_EXHAUSTED: Quota exceeded. RetryInfo { retryDelay: 3s } "Please retry in 3.6s"',
+				}),
+			),
+		).toBe(true);
 	});
 
 	it("classifies assistant error messages", () => {
