@@ -87,7 +87,7 @@ describe("status indicators", () => {
 				}
 			}
 			vi.advanceTimersByTime(1000);
-			expect(stripAnsi(editor.render(120)[0]!)).toContain("Retrying (1/3) in 2s");
+			expect(stripAnsi(editor.render(120)[0]!)).toContain("Retrying, will retry in 2s (1/3, ");
 			editor.setWorkingStatusIndicator(undefined);
 			expect(stripAnsi(editor.render(120)[0]!)).toBe("─".repeat(120));
 		} finally {
